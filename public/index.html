@@ -139,13 +139,8 @@
           redirectOverlay.classList.remove("hidden");
 
           try {
-            // Reference to the public link document
             const linkRef = doc(
               db,
-              "artifacts",
-              appId,
-              "public",
-              "data",
               "qr_links",
               linkId
             );
@@ -362,9 +357,8 @@
             if (!currentUser) {
               throw new Error("Authentication failed. Cannot enable tracking. Please check your Firebase settings (e.g. Anonymous Auth).");
             }
-            // 1. Create a document ID
             const newLinkRef = doc(
-              collection(db, "artifacts", appId, "public", "data", "qr_links")
+              collection(db, "qr_links")
             );
             const linkId = newLinkRef.id;
 
@@ -465,7 +459,7 @@
 
         try {
             const q = query(
-                collection(db, "artifacts", appId, "public", "data", "qr_links"),
+                collection(db, "qr_links"),
                 where("creatorId", "==", currentUser.uid),
                 orderBy("createdAt", "desc")
             );
@@ -485,7 +479,7 @@
 
             querySnapshot.forEach((docSnap) => {
                 const id = docSnap.id;
-                const docRef = doc(db, "artifacts", appId, "public", "data", "qr_links", id);
+                const docRef = doc(db, "qr_links", id);
 
                 // Create UI Element
                 const itemEl = document.createElement("div");
