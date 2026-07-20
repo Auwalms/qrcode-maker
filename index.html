@@ -364,12 +364,16 @@
 
             // 2. Save to Firestore
             // We use a public collection so scanners can read the destination URL
+            const labelInput = document.getElementById('qrLabel');
+            const customLabel = labelInput ? labelInput.value.trim() : "";
+            const finalLabel = customLabel || (text.substring(0, 30) + (text.length > 30 ? "..." : ""));
+
             await setDoc(newLinkRef, {
               originalUrl: text.startsWith("http") ? text : `http://${text}`,
               creatorId: currentUser.uid,
               createdAt: serverTimestamp(),
               scans: 0,
-              label: text.substring(0, 30) + (text.length > 30 ? "..." : ""),
+              label: finalLabel,
               active: true,
             });
 
@@ -460,8 +464,7 @@
         try {
             const q = query(
                 collection(db, "qr_links"),
-                where("creatorId", "==", currentUser.uid),
-                orderBy("createdAt", "desc")
+                where("creatorId", "==", currentUser.uid)
             );
             
             const querySnapshot = await getDocs(q);
@@ -477,7 +480,15 @@
                 return;
             }
 
-            querySnapshot.forEach((docSnap) => {
+            const docs = [];
+            querySnapshot.forEach(doc => docs.push(doc));
+            docs.sort((a, b) => {
+                const aTime = a.data().createdAt?.toMillis() || 0;
+                const bTime = b.data().createdAt?.toMillis() || 0;
+                return bTime - aTime;
+            });
+
+            docs.forEach((docSnap) => {
                 const id = docSnap.id;
                 const docRef = doc(db, "qr_links", id);
 
@@ -751,6 +762,17 @@
               />
               <div class="absolute right-3 top-3 text-gray-400">
                 <i data-lucide="link" class="w-5 h-5"></i>
+              </div>
+            </div>
+            <div class="relative mt-3">
+              <input
+                type="text"
+                id="qrLabel"
+                placeholder="Optional Label (e.g. Spring Promo)"
+                class="w-full pl-4 pr-10 py-3 border-2 border-gray-200 rounded-xl focus:border-indigo-500 focus:outline-none transition-colors text-gray-700 bg-gray-50"
+              />
+              <div class="absolute right-3 top-3 text-gray-400">
+                <i data-lucide="tag" class="w-5 h-5"></i>
               </div>
             </div>
             <!-- Tracking Toggle -->
