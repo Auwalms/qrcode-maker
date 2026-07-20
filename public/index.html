@@ -1,0 +1,650 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Smart QR Code Generator & Analytics</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Import the QRCode library -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode/1.5.1/qrcode.min.js"></script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <!-- Firebase Imports -->
+    <script type="module">
+      import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+      import {
+        getAuth,
+        signInAnonymously,
+        onAuthStateChanged,
+        signInWithCustomToken,
+      } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+      import {
+        getFirestore,
+        collection,
+        doc,
+        setDoc,
+        getDoc,
+        updateDoc,
+        increment,
+        onSnapshot,
+        serverTimestamp,
+      } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+      // Firebase Configuration
+      const firebaseConfig = {
+        apiKey: "AIzaSyBoa7hnqTZXzTFC9k60OkURq13XP63QNLc",
+        authDomain: "qrcode-create.firebaseapp.com",
+        projectId: "qrcode-create",
+        storageBucket: "qrcode-create.firebasestorage.app",
+        messagingSenderId: "165138826150",
+        appId: "1:165138826150:web:b8176aa708176107488567",
+        measurementId: "G-Q5TQC1Z7WW",
+      };
+      const app = initializeApp(firebaseConfig);
+      const auth = getAuth(app);
+      const db = getFirestore(app);
+      const appId =
+        typeof firebaseConfig.appId !== "undefined"
+          ? firebaseConfig.appId
+          : "default-app-id";
+
+      // DOM Elements
+      const generateView = document.getElementById("generateView");
+      const analyticsView = document.getElementById("analyticsView");
+      const redirectOverlay = document.getElementById("redirectOverlay");
+      const tabGenerate = document.getElementById("tabGenerate");
+      const tabAnalytics = document.getElementById("tabAnalytics");
+      const analyticsList = document.getElementById("analyticsList");
+
+      // Generator Elements
+      const qrInput = document.getElementById("qrInput");
+      const colorDark = document.getElementById("colorDark");
+      const colorLight = document.getElementById("colorLight");
+      const generateBtn = document.getElementById("generateBtn");
+      const canvas = document.getElementById("qrCanvas");
+      const resultContainer = document.getElementById("resultContainer");
+      const downloadBtn = document.getElementById("downloadBtn");
+      const errorMessage = document.getElementById("errorMessage");
+      const darkHex = document.getElementById("darkHex");
+      const lightHex = document.getElementById("lightHex");
+      const logoInput = document.getElementById("logoInput");
+      const logoFileName = document.getElementById("logoFileName");
+      const logoPreviewContainer = document.getElementById(
+        "logoPreviewContainer"
+      );
+      const logoPreview = document.getElementById("logoPreview");
+      const removeLogoBtn = document.getElementById("removeLogoBtn");
+      const trackScansCheckbox = document.getElementById("trackScans");
+
+      // State
+      let uploadedLogoImage = null;
+      let currentUser = null;
+      let createdLinkIds = JSON.parse(
+        localStorage.getItem("my_qr_ids") || "[]"
+      );
+
+      // --- Authentication & Initialization ---
+      const initAuth = async () => {
+        try {
+          if (
+            typeof __initial_auth_token !== "undefined" &&
+            __initial_auth_token
+          ) {
+            await signInWithCustomToken(auth, __initial_auth_token);
+          } else {
+            await signInAnonymously(auth);
+          }
+        } catch (error) {
+          console.error("Auth error:", error);
+        }
+      };
+
+      initAuth();
+
+      onAuthStateChanged(auth, (user) => {
+        currentUser = user;
+        if (user) {
+          checkRedirectMode(); // Check if we are scanning a code
+          loadAnalytics(); // Start listening for stats
+        }
+      });
+
+      // --- Redirect Logic (Scan Handling) ---
+      async function checkRedirectMode() {
+        const urlParams = new URLSearchParams(window.location.search);
+        const linkId = urlParams.get("id");
+
+        if (linkId) {
+          // Show redirect overlay
+          redirectOverlay.classList.remove("hidden");
+
+          try {
+            // Reference to the public link document
+            const linkRef = doc(
+              db,
+              "artifacts",
+              appId,
+              "public",
+              "data",
+              "qr_links",
+              linkId
+            );
+            const linkSnap = await getDoc(linkRef);
+
+            if (linkSnap.exists()) {
+              const data = linkSnap.data();
+
+              // Increment scan count
+              await updateDoc(linkRef, {
+                scans: increment(1),
+                lastScannedAt: serverTimestamp(),
+              });
+
+              // Redirect
+              setTimeout(() => {
+                window.location.href = data.originalUrl;
+              }, 800); // Small delay for UX
+            } else {
+              alert("This QR code is expired or invalid.");
+              redirectOverlay.classList.add("hidden");
+            }
+          } catch (err) {
+            console.error("Redirect error:", err);
+            alert("Error processing QR code.");
+            redirectOverlay.classList.add("hidden");
+          }
+        }
+      }
+
+      // --- Generator Logic ---
+
+      // UI Event Listeners
+      colorDark.addEventListener(
+        "input",
+        (e) => (darkHex.textContent = e.target.value.toUpperCase())
+      );
+      colorLight.addEventListener(
+        "input",
+        (e) => (lightHex.textContent = e.target.value.toUpperCase())
+      );
+
+      logoInput.addEventListener("change", (e) => {
+        const file = e.target.files[0];
+        if (file) {
+          logoFileName.textContent = file.name;
+          const reader = new FileReader();
+          reader.onload = (evt) => {
+            logoPreview.src = evt.target.result;
+            logoPreviewContainer.classList.remove("hidden");
+            uploadedLogoImage = new Image();
+            uploadedLogoImage.src = evt.target.result;
+            uploadedLogoImage.onload = () => {
+              if (!resultContainer.classList.contains("hidden")) generateQR();
+            };
+          };
+          reader.readAsDataURL(file);
+        }
+      });
+
+      removeLogoBtn.addEventListener("click", () => {
+        logoInput.value = "";
+        logoFileName.textContent = "Click to upload";
+        logoPreview.src = "";
+        logoPreviewContainer.classList.add("hidden");
+        uploadedLogoImage = null;
+        if (!resultContainer.classList.contains("hidden")) generateQR();
+      });
+
+      // Tab Switching
+      tabGenerate.addEventListener("click", () => {
+        tabGenerate.classList.add("text-indigo-600", "border-indigo-600");
+        tabGenerate.classList.remove("text-gray-500", "border-transparent");
+        tabAnalytics.classList.add("text-gray-500", "border-transparent");
+        tabAnalytics.classList.remove("text-indigo-600", "border-indigo-600");
+        generateView.classList.remove("hidden");
+        analyticsView.classList.add("hidden");
+      });
+
+      tabAnalytics.addEventListener("click", () => {
+        tabAnalytics.classList.add("text-indigo-600", "border-indigo-600");
+        tabAnalytics.classList.remove("text-gray-500", "border-transparent");
+        tabGenerate.classList.add("text-gray-500", "border-transparent");
+        tabGenerate.classList.remove("text-indigo-600", "border-indigo-600");
+        analyticsView.classList.remove("hidden");
+        generateView.classList.add("hidden");
+      });
+
+      // Core Generation
+      generateBtn.addEventListener("click", generateQR);
+      qrInput.addEventListener("keypress", (e) => {
+        if (e.key === "Enter") generateQR();
+      });
+      downloadBtn.addEventListener("click", () => {
+        const link = document.createElement("a");
+        link.download = "qrcode.png";
+        link.href = canvas.toDataURL("image/png");
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+      });
+
+      async function generateQR() {
+        let text = qrInput.value.trim();
+        if (!text) {
+          errorMessage.classList.remove("hidden");
+          resultContainer.classList.add("hidden");
+          return;
+        }
+        errorMessage.classList.add("hidden");
+
+        // Loading State
+        const originalBtnText = generateBtn.innerHTML;
+        generateBtn.innerHTML = `<i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i> Processing...`;
+        lucide.createIcons();
+
+        try {
+          // Check if Tracking is enabled
+          if (trackScansCheckbox.checked && currentUser) {
+            // 1. Create a document ID
+            const newLinkRef = doc(
+              collection(db, "artifacts", appId, "public", "data", "qr_links")
+            );
+            const linkId = newLinkRef.id;
+
+            // 2. Save to Firestore
+            // We use a public collection so scanners can read the destination URL
+            await setDoc(newLinkRef, {
+              originalUrl: text.startsWith("http") ? text : `http://${text}`,
+              creatorId: currentUser.uid,
+              createdAt: serverTimestamp(),
+              scans: 0,
+              label: text.substring(0, 30) + (text.length > 30 ? "..." : ""),
+            });
+
+            // 3. Save ID to local storage for "My Analytics"
+            createdLinkIds.push(linkId);
+            localStorage.setItem("my_qr_ids", JSON.stringify(createdLinkIds));
+
+            // 4. Construct the tracking URL
+            // This points back to THIS page with an ID param
+            const baseUrl = window.location.href.split("?")[0];
+            text = `${baseUrl}?id=${linkId}`;
+
+            // Refresh analytics view
+            loadAnalytics();
+          }
+
+          // Draw QR Code
+          const options = {
+            width: 600,
+            margin: 2,
+            color: { dark: colorDark.value, light: colorLight.value },
+            errorCorrectionLevel: "H",
+          };
+
+          QRCode.toCanvas(canvas, text, options, function (error) {
+            if (error) throw error;
+
+            if (uploadedLogoImage) {
+              const ctx = canvas.getContext("2d");
+              const size = canvas.width;
+              const logoSize = size * 0.22;
+              const center = (size - logoSize) / 2;
+
+              // Logo Background
+              ctx.fillStyle = colorLight.value;
+              const bgSize = logoSize * 1.1;
+              const bgCenter = (size - bgSize) / 2;
+              ctx.beginPath();
+              ctx.roundRect(bgCenter, bgCenter, bgSize, bgSize, bgSize * 0.15);
+              ctx.fill();
+
+              ctx.drawImage(
+                uploadedLogoImage,
+                center,
+                center,
+                logoSize,
+                logoSize
+              );
+            }
+
+            resultContainer.classList.remove("hidden");
+            resultContainer.classList.add("flex");
+            resultContainer.scrollIntoView({
+              behavior: "smooth",
+              block: "nearest",
+            });
+          });
+        } catch (err) {
+          console.error(err);
+          alert("Error generating QR code");
+        } finally {
+          generateBtn.innerHTML = originalBtnText;
+          lucide.createIcons();
+        }
+      }
+
+      // --- Analytics Logic ---
+      function loadAnalytics() {
+        if (!createdLinkIds.length) {
+          analyticsList.innerHTML = `
+                    <div class="text-center py-8 text-gray-400">
+                        <i data-lucide="bar-chart-2" class="w-12 h-12 mx-auto mb-2 opacity-20"></i>
+                        <p>No tracked QR codes created yet.</p>
+                    </div>`;
+          lucide.createIcons();
+          return;
+        }
+
+        // Clear current list to rebuild (simple implementation)
+        analyticsList.innerHTML = "";
+
+        // For each ID in local history, set up a listener
+        // Note: In a real app with many links, we'd query the collection where creatorId == me.
+        // Here we stick to the mandated simple queries or direct doc refs.
+        createdLinkIds.reverse().forEach((id) => {
+          const docRef = doc(
+            db,
+            "artifacts",
+            appId,
+            "public",
+            "data",
+            "qr_links",
+            id
+          );
+
+          // Create UI Element
+          const itemEl = document.createElement("div");
+          itemEl.className =
+            "bg-gray-50 rounded-xl p-4 border border-gray-200 flex items-center justify-between animate-fade-in";
+          analyticsList.appendChild(itemEl);
+
+          // Listen for updates
+          onSnapshot(
+            docRef,
+            (doc) => {
+              if (doc.exists()) {
+                const data = doc.data();
+                itemEl.innerHTML = `
+                            <div class="overflow-hidden pr-4">
+                                <div class="flex items-center gap-2 mb-1">
+                                    <span class="text-xs font-bold bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded-full">TRACKED</span>
+                                    <span class="text-xs text-gray-400">${new Date(
+                                      data.createdAt?.toDate()
+                                    ).toLocaleDateString()}</span>
+                                </div>
+                                <p class="text-sm font-medium text-gray-800 truncate" title="${
+                                  data.originalUrl
+                                }">${data.label || data.originalUrl}</p>
+                                <p class="text-xs text-gray-500 truncate">ID: ${id}</p>
+                            </div>
+                            <div class="flex flex-col items-end min-w-[80px]">
+                                <div class="flex items-center gap-1 text-2xl font-bold text-indigo-600">
+                                    ${data.scans}
+                                    <i data-lucide="scan-line" class="w-4 h-4 text-indigo-400 mb-1"></i>
+                                </div>
+                                <span class="text-xs text-gray-500">Total Scans</span>
+                            </div>
+                        `;
+                lucide.createIcons();
+              } else {
+                itemEl.remove(); // Removed from DB
+              }
+            },
+            (error) => {
+              console.error("Error listening to analytics:", error);
+            }
+          );
+        });
+      }
+
+      // Initial Icons
+      lucide.createIcons();
+    </script>
+    <style>
+      @import url("https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap");
+      body {
+        font-family: "Inter", sans-serif;
+      }
+      .animate-fade-in {
+        animation: fadeIn 0.5s ease-out;
+      }
+      @keyframes fadeIn {
+        from {
+          opacity: 0;
+          transform: translateY(10px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+    </style>
+  </head>
+  <body class="bg-slate-900 min-h-screen flex items-center justify-center p-4">
+    <!-- Redirect Overlay (Shows when scanning) -->
+    <div
+      id="redirectOverlay"
+      class="fixed inset-0 z-50 bg-slate-900 flex flex-col items-center justify-center text-white hidden"
+    >
+      <div
+        class="w-16 h-16 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin mb-6"
+      ></div>
+      <h2 class="text-2xl font-bold mb-2">Processing QR Scan...</h2>
+      <p class="text-gray-400">Redirecting you to the destination</p>
+    </div>
+
+    <div
+      class="bg-white w-full max-w-[600px] rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]"
+    >
+      <!-- Header -->
+      <div class="bg-indigo-600 p-6 text-center shrink-0">
+        <h1
+          class="text-2xl font-bold text-white flex items-center justify-center gap-2"
+        >
+          <i data-lucide="qr-code" class="w-8 h-8"></i>
+          QR Suite
+        </h1>
+      </div>
+
+      <!-- Tabs -->
+      <div class="flex border-b border-gray-200 shrink-0">
+        <button
+          id="tabGenerate"
+          class="flex-1 py-3 text-sm font-medium text-indigo-600 border-b-2 border-indigo-600 focus:outline-none transition-colors"
+        >
+          Generator
+        </button>
+        <button
+          id="tabAnalytics"
+          class="flex-1 py-3 text-sm font-medium text-gray-500 border-b-2 border-transparent hover:text-gray-700 focus:outline-none transition-colors"
+        >
+          My Analytics
+        </button>
+      </div>
+
+      <div class="overflow-y-auto p-6">
+        <!-- Generator View -->
+        <div id="generateView" class="space-y-6">
+          <!-- Input Section -->
+          <div class="space-y-2">
+            <label class="text-sm font-semibold text-gray-700 ml-1"
+              >Destination URL</label
+            >
+            <div class="relative">
+              <input
+                type="text"
+                id="qrInput"
+                placeholder="https://example.com"
+                class="w-full pl-4 pr-10 py-3 border-2 border-gray-200 rounded-xl focus:border-indigo-500 focus:outline-none transition-colors text-gray-700 bg-gray-50"
+              />
+              <div class="absolute right-3 top-3 text-gray-400">
+                <i data-lucide="link" class="w-5 h-5"></i>
+              </div>
+            </div>
+            <!-- Tracking Toggle -->
+            <label class="flex items-center gap-2 mt-2 cursor-pointer group">
+              <div class="relative">
+                <input
+                  type="checkbox"
+                  id="trackScans"
+                  class="sr-only peer"
+                  checked
+                />
+                <div
+                  class="w-10 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-indigo-600"
+                ></div>
+              </div>
+              <span
+                class="text-sm text-gray-600 group-hover:text-indigo-600 transition-colors"
+                >Enable Scan Tracking</span
+              >
+            </label>
+          </div>
+
+          <!-- Customization Options -->
+          <div class="grid grid-cols-2 gap-4">
+            <div>
+              <label
+                class="text-xs font-semibold text-gray-500 uppercase tracking-wider ml-1"
+                >Foreground</label
+              >
+              <div
+                class="flex items-center mt-1 border border-gray-200 rounded-lg p-1 bg-gray-50"
+              >
+                <input
+                  type="color"
+                  id="colorDark"
+                  value="#000000"
+                  class="w-8 h-8 rounded cursor-pointer border-none bg-transparent"
+                />
+                <span class="text-xs text-gray-600 ml-2 font-mono" id="darkHex"
+                  >#000000</span
+                >
+              </div>
+            </div>
+            <div>
+              <label
+                class="text-xs font-semibold text-gray-500 uppercase tracking-wider ml-1"
+                >Background</label
+              >
+              <div
+                class="flex items-center mt-1 border border-gray-200 rounded-lg p-1 bg-gray-50"
+              >
+                <input
+                  type="color"
+                  id="colorLight"
+                  value="#ffffff"
+                  class="w-8 h-8 rounded cursor-pointer border-none bg-transparent"
+                />
+                <span class="text-xs text-gray-600 ml-2 font-mono" id="lightHex"
+                  >#FFFFFF</span
+                >
+              </div>
+            </div>
+          </div>
+
+          <!-- Logo Upload Section -->
+          <div class="space-y-2">
+            <label class="text-sm font-semibold text-gray-700 ml-1"
+              >Logo (Optional)</label
+            >
+            <div class="flex items-center gap-4">
+              <label
+                for="logoInput"
+                class="flex-1 flex flex-col items-center px-4 py-3 bg-gray-50 text-gray-500 rounded-xl border-2 border-dashed border-gray-200 cursor-pointer hover:bg-gray-100 hover:border-indigo-300 transition-all"
+              >
+                <i data-lucide="image-plus" class="w-6 h-6 mb-1"></i>
+                <span
+                  class="text-xs font-medium text-gray-600"
+                  id="logoFileName"
+                  >Click to upload</span
+                >
+                <input
+                  type="file"
+                  id="logoInput"
+                  class="hidden"
+                  accept="image/png, image/jpeg, image/svg+xml"
+                />
+              </label>
+              <div
+                id="logoPreviewContainer"
+                class="hidden w-14 h-14 rounded-lg border-2 border-gray-200 p-1 bg-white flex items-center justify-center relative group"
+              >
+                <img
+                  id="logoPreview"
+                  src=""
+                  alt="Logo Preview"
+                  class="max-w-full max-h-full object-contain"
+                />
+                <button
+                  id="removeLogoBtn"
+                  class="absolute -top-2 -right-2 bg-red-500 text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity"
+                >
+                  <i data-lucide="x" class="w-3 h-3"></i>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Generate Button -->
+          <button
+            id="generateBtn"
+            class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 px-4 rounded-xl transition-all duration-200 transform active:scale-95 flex items-center justify-center gap-2 shadow-lg shadow-indigo-200"
+          >
+            Generate QR Code
+            <i data-lucide="refresh-cw" class="w-4 h-4"></i>
+          </button>
+
+          <!-- Output Section -->
+          <div
+            id="resultContainer"
+            class="hidden flex-col items-center space-y-4 pt-4 border-t border-gray-100 animate-fade-in"
+          >
+            <div class="canvas-container relative group">
+              <canvas id="qrCanvas"></canvas>
+            </div>
+            <div class="flex gap-3 w-full">
+              <button
+                id="downloadBtn"
+                class="flex-1 bg-slate-800 hover:bg-slate-900 text-white py-2 px-4 rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2"
+              >
+                <i data-lucide="download" class="w-4 h-4"></i>
+                Download PNG
+              </button>
+            </div>
+            <p class="text-xs text-center text-gray-400 max-w-xs">
+              *If tracking is enabled, this QR code points to this analytics
+              page first, then redirects to your URL.
+            </p>
+          </div>
+
+          <div
+            id="errorMessage"
+            class="hidden p-3 bg-red-50 border border-red-100 text-red-600 rounded-lg text-sm text-center"
+          >
+            Please enter a URL first!
+          </div>
+        </div>
+
+        <!-- Analytics View -->
+        <div id="analyticsView" class="hidden space-y-4">
+          <div class="flex items-center justify-between pb-2">
+            <h3 class="text-lg font-bold text-gray-800">Your Links</h3>
+            <span class="text-xs text-gray-500">Updates automatically</span>
+          </div>
+          <div id="analyticsList" class="space-y-3">
+            <!-- Items injected via JS -->
+            <div class="text-center py-8">
+              <i
+                data-lucide="loader-2"
+                class="w-8 h-8 mx-auto animate-spin text-indigo-600 mb-2"
+              ></i>
+              <p class="text-sm text-gray-500">Loading your history...</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>
